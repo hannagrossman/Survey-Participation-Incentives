@@ -1,0 +1,805 @@
+---
+title: "W241 Final Project"
+output: pdf_document
+date: '2022-07-30'
+---
+
+# Running Libraries 
+```{r}
+library(data.table)
+library(stargazer)
+library(lmtest)
+library(sandwich)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(multiwayvcov)
+library(gsynth)
+library(kableExtra)
+library(ivreg)
+library(car)
+library(carData)
+library(survival)
+library(janitor)
+library(tidyverse)
+library(ggpubr)
+library(readxl)
+library(MASS)
+```
+
+# Load the Data 
+```{r}
+data <- read_csv("Survey Data_7.28.22_csv.csv")
+head(data)
+```
+
+# Renaming Variables and Formatting Data  
+```{r}
+#adding underscore between empty spaces among variable names
+data<- clean_names(data)
+
+#viewing all variable names in data
+#colnames(data)
+
+#renaming covariates
+data <- rename(data, get_survey = how_did_you_get_this_survey)
+data <- rename(data, past_survey_per = in_the_past_what_percentages_of_surveys_did_you_complete)
+data <- rename(data, time_on_survey = how_much_time_on_average_do_you_spend_on_a_given_survey)
+data <- rename(data, gender = what_is_your_gender)
+data <- rename(data, age = what_is_your_age)
+data <- rename(data, ethnicity = what_is_your_ethnicity)
+data <- rename(data, education = what_is_your_highest_degree_or_level_of_education)
+
+#renaming survey check questions
+data <- rename(data, 
+               check_1_c =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_48)
+data <- rename(data, 
+               check_2_c =
+                 if_you_are_following_this_survey_please_select_choice_neither_agree_nor_disagree_below_82)
+data <- rename(data, 
+               check_3_c =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_110)
+data <- rename(data, 
+               check_1_f =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_154)
+data <- rename(data, 
+               check_2_f =
+                 if_you_are_following_this_survey_please_select_choice_neither_agree_nor_disagree_below_188)
+data <- rename(data, 
+               check_3_f =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_216)
+data <- rename(data, 
+               check_1_s =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_260)
+data <- rename(data, 
+               check_2_s =
+                 if_you_are_following_this_survey_please_select_choice_neither_agree_nor_disagree_below_294)
+data <- rename(data, 
+               check_3_s =
+                 if_you_are_following_this_survey_please_select_choice_agree_below_322)
+
+
+
+#renaming treatment variable
+data <- rename(data, treat = treatment_group)
+
+#renaming outcome variable
+data <- rename(data, total_ques = number_of_questions_answered)
+data <- rename(data, dur_min = duration_in_minutes)
+
+#recoding treatment variable
+#0=control
+#1 financial
+#2 social good
+data$treat[data$treat=="Block1-Control"] <- "0 - Control"
+data$treat[data$treat=="Block2-Treatment1"] <- "1 - Financial"
+data$treat[data$treat=="Block3-Treatment2"] <-"2 - Social Good"
+
+
+
+```
+
+# Fixing IP Address Issue and Subsetting Data 
+```{r}
+
+#sort data by ip_address and by start time
+data <- data[with(data, order(ip_address, start_date)), ]
+
+#remove duplicates of ip_address - keeping the first start time , saving as a new dataset
+d2 <- data[!duplicated(data$ip_address), ]
+
+d2 <- data.table(d2)
+
+#removing outliers and saving it to a new data set
+d2_out_rem <- subset(d2, d2$dur_min < 500)
+
+#creating a subset of main data that only has treatment, covariates of interest, and outcomes (time and questions answered)
+d3 <- d2[, c(6:8, 14:20, 339:340)]
+
+#dropping missing values from this set to be able to do anova
+d3 <- d2[complete.cases(d3),]
+d3 <- data.table(d3)
+
+#creating a subset of main data that only has treatment, covariates of interest, and outcomes (time and questions answered)
+d3_out_rem <- d2_out_rem[, c(6:8, 14:20, 339:340)]
+
+#dropping missing values from this set to be able to do anova
+d3_out_rem <- d2_out_rem[complete.cases(d3_out_rem),]
+d3_out_rem <- data.table(d3_out_rem)
+
+head(d3)
+
+d2_out_rem_no_mturk <- subset(d2_out_rem, d2_out_rem$mturk==0)
+
+```
+
+# Exploratory Data Analysis -- MUST INCLUDE in REPORT
+```{r}
+#box plot of time spent and questions answered
+par(mfrow=c(2,1))
+bp1 <- boxplot(dur_min~treat,data=d2, main="Total Minutes Spent by Treatment",
+        xlab="Treatment Group", ylab="Total Minutes Spent on Survey")
+#boxplot shows 3 observations that are longer than 500 minutes, 
+#which is very different from rest of the data
+
+bp2<- boxplot(total_ques~treat,data=d2, main="Total Questions Answered by Treatment",
+        xlab="Treatment Group", ylab="Total Questions Answered on Survey")
+
+bp1
+bp2
+#box plot of time spent and questions answered on data with outliers removed
+par(mfrow=c(2,1))
+bp3 <- boxplot(dur_min~treat,data=d2_out_rem, main="Total Minutes Spent by Treatment",
+        xlab="Treatment Group", ylab="Total Minutes Spent on Survey")
+#boxplot shows 3 observations that are longer than 500 minutes, 
+#which is very different from rest of the data
+
+bp4 <- boxplot(total_ques~treat,data=d2_out_rem, main="Total Questions Answered by Treatment",
+        xlab="Treatment Group", ylab="Total Questions Answered on Survey")
+
+bp3
+bp4
+
+#scatterplot on questions and treatment
+par(mfrow=c(2,1))
+sp_q<- ggplot(d2, aes(x = treat, y = total_ques)) +
+  geom_point()+
+  geom_boxplot()+
+  ggtitle("Total Questions Answered versus Treatment")
+
+#scatterplot on time spent and treatment
+sp_t<- ggplot(d2, aes(x = treat, y = dur_min)) +
+  geom_point()+
+  geom_boxplot()+
+  labs(title="Total Time Spent versus Treatment")
+sp_q
+sp_t
+
+
+#data with outliers
+hist_q <- ggplot(d2, aes(total_ques, fill = treat)) +
+  geom_histogram(binwidth=.5, position="dodge")+
+  labs(title="Distribution of Total Questions Answered", x="Total Questions Answered", y="Count")
+
+hist_t <- ggplot(d2, aes(dur_min, fill = treat)) +
+  geom_histogram(binwidth=.5, position="dodge")+
+  labs(title="Distribution of Total Minutes Spent", x="Total Minutes Spent", y="Count")
+
+#combining 2 histograms
+figure_ht <- ggarrange(hist_q, hist_t,
+                    ncol = 2, nrow = 1)
+
+annotate_figure(figure_ht, top = text_grob("Two Outcome Distributions by Treatment Group (with Outliers)", 
+                                      color = "blue", size=14))
+
+
+#outliers removed
+hist_qo <- ggplot(d2_out_rem, aes(total_ques, fill = treat)) +
+  geom_histogram(binwidth=.5, position="dodge")+
+  labs(title="Distribution of Total Questions Answered", x="Total Questions Answered", y="Count")
+
+
+hist_to <- ggplot(d2_out_rem, aes(dur_min, fill = treat)) +
+  geom_histogram(binwidth=.5, position="dodge")+
+  labs(title="Distribution of Total Minutes Spent", x="Total Minutes Spent", y="Count")
+
+
+
+#combining 2 histograms
+figure_hto <- ggarrange(hist_qo, hist_to,
+                    ncol = 2, nrow = 1)
+
+annotate_figure(figure_hto, top = text_grob("Two Outcome Distributions by Treatment Group (Outliers Removed)", 
+                                      color = "blue", size=14))
+```
+
+
+# Survey Checks for Control Group 
+```{r}
+#first check
+c_1_plot <- ggplot(data=subset(d2, d2$treat=="0 - Control"), aes(x=check_1_c)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#second check
+c_2_plot <- ggplot(data=subset(d2, d2$treat=="0 - Control"), aes(x=check_2_c)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Neither Agree nor Disagree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#third check
+c_3_plot <- ggplot(data=subset(d2, d2$treat=="0 - Control"), aes(x=check_3_c)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#combining 3 checks on one plot
+figure_c <- ggarrange(c_1_plot, c_2_plot, c_3_plot,
+                    ncol = 3, nrow = 1)
+
+annotate_figure(figure_c, top = text_grob("Three Survey Checks for Control Group", 
+                                      color = "blue", size=14))
+
+```
+
+# Survey Checks for Financial Group 
+```{r}
+#first check
+f_1_plot <- ggplot(data=subset(d2, d2$treat=="1 - Financial"), aes(x=check_1_f)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#second check
+f_2_plot <- ggplot(data=subset(d2, d2$treat=="1 - Financial"), aes(x=check_2_f)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Neither Agree nor Disagree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#third check
+f_3_plot <- ggplot(data=subset(d2, d2$treat=="1 - Financial"), aes(x=check_3_f)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#combining 3 checks on one plot
+figure_f <- ggarrange(f_1_plot, f_2_plot, f_3_plot,
+                      ncol = 3, nrow = 1)
+
+annotate_figure(figure_f, top = text_grob("Three Survey Checks for Financial Group", 
+                                          color = "blue", size=14))
+
+
+
+
+
+```
+
+# Survey Checks for Social Group 
+```{r}
+#first check
+s_1_plot <- ggplot(data=subset(d2, d2$treat=="2 - Social Good"), aes(x=check_1_s)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#second check
+s_2_plot <- ggplot(data=subset(d2, d2$treat=="2 - Social Good"), aes(x=check_2_s)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Neither Agree nor Disagree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#third check
+s_3_plot <- ggplot(data=subset(d2, d2$treat=="2 - Social Good"), aes(x=check_3_s)) +
+  geom_bar()+
+  geom_text(aes(label = ..count..), stat = "count", vjust = 0, colour = "black")+
+  scale_fill_brewer(palette="Paired")+
+  scale_x_discrete(guide = guide_axis(angle = 90))+ 
+  ylab("Count of Answer Choices")+
+  xlab("Answer Choices")+
+  ggtitle("Select Agree")+
+  theme(axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+#combining 3 checks on one plot
+figure_s <- ggarrange(s_1_plot, s_2_plot, s_3_plot,
+                      ncol = 3, nrow = 1)
+
+annotate_figure(figure_s, top = text_grob("Three Survey Checks for Social Group", 
+                                          color = "blue", size=14))
+```
+
+
+# Boxplots 
+```{r}
+#box plots to see distribution of minutes spent for each of the survey checks
+par(mfrow=c(3,1))
+
+boxplot(dur_min~check_1_c,data=subset(d2, d2$treat=="0 - Control"), 
+        main=
+          "First Survey Check for Control Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+
+boxplot(dur_min~check_2_c,data=subset(d2, d2$treat=="0 - Control"), 
+        main=
+          "Second Survey Check for Control Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+boxplot(dur_min~check_3_c,data=subset(d2, d2$treat=="0 - Control"), 
+        main=
+          "Third Survey Check for Control Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+
+par(mfrow=c(3,1))
+
+boxplot(dur_min~check_1_f,data=subset(d2, d2$treat=="1 - Financial"), 
+        main=
+          "First Survey Check for Financial Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+
+boxplot(dur_min~check_2_f,data=subset(d2, d2$treat=="1 - Financial"), 
+        main=
+          "Second Survey Check for Financial Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+boxplot(dur_min~check_3_f,data=subset(d2, d2$treat=="1 - Financial"), 
+        main=
+          "Third Survey Check for Financial Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+
+
+par(mfrow=c(3,1))
+
+boxplot(dur_min~check_1_s,data=subset(d2, d2$treat=="2 - Social Good"), 
+        main=
+          "First Survey Check for Social Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+
+boxplot(dur_min~check_2_s,data=subset(d2, d2$treat=="2 - Social Good"), 
+        main=
+          "Second Survey Check for Social Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+
+boxplot(dur_min~check_3_s,data=subset(d2, d2$treat=="2 - Social Good"), 
+        main=
+          "Third Survey Check for Social Group - If you are following the survey, please choose Agree",
+        xlab="Answer Choices", ylab="Time Spent on Survey")
+```
+
+
+
+
+# Covariate Balance Checks 
+```{r}
+#changing coding of Treatment to 0, 1, 2 for purpose of ANOVA
+d3$treat[d3$treat=="0 - Control"] <- "0"
+d3$treat[d3$treat=="1 - Financial"] <- "1"
+d3$treat[d3$treat=="2 - Social Good"] <- "2"
+
+
+#average rate of treatments for each 
+null_model <- d3[, lm(treat ~ 1)]
+summary(null_model)
+
+#check for p-values more than 0.05
+full_model <- d3[, lm(treat ~ 1+ factor(get_survey) + 
+                        factor(gender) + factor(age) + 
+                        factor(past_survey_per) + 
+                        factor(time_on_survey) + 
+                        factor(ethnicity)+ 
+                        factor(education))]
+
+#summary(full_model)
+
+#is our model doing any better with the coefficients
+#Null hypo= randomization worked well--we are not rejecting null, so random check is good
+anova_mod <- anova(full_model, null_model, test='F')
+anova_mod
+
+
+#changing coding of Treatment to 0, 1, 2 for purpose of ANOVA
+d3_out_rem$treat[d3_out_rem$treat=="0 - Control"] <- "0"
+d3_out_rem$treat[d3_out_rem$treat=="1 - Financial"] <- "1"
+d3_out_rem$treat[d3_out_rem$treat=="2 - Social Good"] <- "2"
+
+#covariate balance check on data with 3 outliers removed
+#average rate of treatments for each 
+null_model_o <- d3_out_rem[, lm(treat ~ 1)]
+#summary(null_model)
+
+#check for p-values more than 0.05
+full_model_o <- d3_out_rem[, lm(treat ~ 1+ factor(get_survey) + 
+                                factor(gender) + factor(age) + 
+                                factor(past_survey_per) + 
+                                factor(time_on_survey) + 
+                                factor(ethnicity)+ 
+                                factor(education))]
+
+
+
+#summary(full_model)
+#when removing outliers, we only get left with one variable that is not balanced
+full_model_2_o <- d3_out_rem[, lm(treat ~ 1+ factor(get_survey) + 
+                                  factor(gender) + factor(age) + 
+                                  factor(past_survey_per) + 
+                                  factor(ethnicity)+ 
+                                  factor(education))]
+#summary(full_model_2)
+
+#is our model doing any better with the coefficients
+#Null hypo= randomization worked well--we are not rejecting null, so random check is good
+anova_mod <- anova(full_model_o, null_model_o, test='F')
+anova_mod
+#when removing outliers, p-value becomes even larger, indicating better randomization
+```
+
+
+
+
+# 3 Assumptions Before Anovas:   
+- Randomization - we confirmed that this assumption is met through the covariate balance check above   
+- Spillover - we don't think this should be a problem since there is only one survey. We think it is unlikely that individuals will discuss the survey, and if they do it will most likely be after they have completed the survey. Therefore, this will not have an impact on the survey results   
+- Excludability - the groups are the same, except for the treatment difference. Therefore, the treatment should be the only way to impact the outcome   
+
+
+#Going to use the data with outliers removed, going forward.
+
+```{r}
+#recoding the treatment variable in the outliers removed data d2_out_rem
+d2_out_rem$treat[d2_out_rem$treat=="Block1-Control"] <- "0 - Control"
+d2_out_rem$treat[d2_out_rem$treat=="Block2-Treatment1"] <- "1 - Financial"
+d2_out_rem$treat[d2_out_rem$treat=="Block3-Treatment2"] <-"2 - Social Good"
+```
+
+
+# Estimating ATEs
+```{r}
+
+
+#Calculating ATE 
+#Means for Total Questions and Duration Minutes by Treatment Group - without outliers 
+means_wo_outliers <- d2_out_rem[, lapply(.SD, mean), 
+                                by = .(treat), .SDcols = c("total_ques", "dur_min")][order(treat)]
+means_wo_outliers
+financial_total_ques_ate_wo_outliers <- means_wo_outliers[2,2] - 
+  means_wo_outliers[1,2]
+as.numeric(financial_total_ques_ate_wo_outliers)
+social_total_ques_ate_wo_outliers <- means_wo_outliers[3,2] - 
+  means_wo_outliers[1,2]
+as.numeric(social_total_ques_ate_wo_outliers)
+financial_dur_min_ate_wo_outliers <- means_wo_outliers[2,3] - 
+  means_wo_outliers[1,3]
+as.numeric(financial_dur_min_ate_wo_outliers)
+social_dur_min_ate_wo_outliers <- means_wo_outliers[3,3] - 
+  means_wo_outliers[1,3]
+as.numeric(social_dur_min_ate_wo_outliers)
+
+```
+
+
+
+# Linear Models with Covariates Included 
+```{r}
+# Linear model for total questions - without outliers 
+model_total_ques_d2_out_rem_treat <- lm(total_ques ~ 
+                                    treat, data = d2_out_rem)
+
+model_total_ques_d2_out_rem_some_cov <- lm(total_ques ~ 
+                                    treat + 
+                                    time_on_survey+
+                                    mturk, data = d2_out_rem)
+
+model_total_ques_d2_out_rem_all_cov <- lm(total_ques ~ 
+                                    treat + 
+                                    get_survey + 
+                                    past_survey_per + 
+                                    time_on_survey +
+                                    gender + age + 
+                                    ethnicity + education + 
+                                    mturk, data = d2_out_rem)
+
+
+
+# Linear model for duration - without outliers 
+model_dur_min_d2_out_rem_treat <- lm(dur_min ~ 
+                                 treat, data = d2_out_rem)
+
+
+model_dur_min_d2_out_rem_all_some_cov <- lm(dur_min ~ 
+                                 treat + 
+                              
+                                 time_on_survey + 
+                                
+                                 mturk, data = d2_out_rem)
+
+#summary(model_dur_min_d2_out_rem_treat)
+
+model_dur_min_d2_out_rem_all_cov <- lm(dur_min ~ 
+                                 treat + 
+                                 get_survey + 
+                                 past_survey_per + 
+                                 time_on_survey + 
+                                 gender + age + 
+                                 ethnicity + 
+                                 education + 
+                                 mturk, data = d2_out_rem)
+#summary(model_dur_min_d2_out_rem)
+
+
+#linear model on data subset with no Mturk users
+model_dur_min_d2_out_rem_no_mturk_all_cov <- lm(dur_min ~ 
+                                 treat + 
+                                 get_survey + 
+                                 past_survey_per + 
+                                 time_on_survey + 
+                                 gender + age + 
+                                 ethnicity + 
+                                 education, data = d2_out_rem_no_mturk)
+summary(model_dur_min_d2_out_rem_no_mturk_all_cov)
+
+model_dur_min_d2_out_rem_no_mturk_all_cov <- lm(dur_min ~ 
+                                 treat + 
+                                 get_survey + 
+                                 past_survey_per + 
+                                 time_on_survey + 
+                                 gender + age + 
+                                 ethnicity + 
+                                 education, data = d2_out_rem_no_mturk)
+summary(model_dur_min_d2_out_rem_no_mturk_all_cov)
+
+
+
+
+
+
+#printing liner models
+
+stargazer(model_total_ques_d2_out_rem_treat,model_total_ques_d2_out_rem_some_cov,model_total_ques_d2_out_rem_all_cov,
+ dep.var.labels=c("Total Questions Answered"),
+  column.labels = c("Treatment Only", "Covariates","All Covariates"),
+  type = 'text', 
+  header=F
+  )
+
+stargazer(model_dur_min_d2_out_rem_treat,model_dur_min_d2_out_rem_all_some_cov,model_dur_min_d2_out_rem_all_cov,
+ dep.var.labels=c("Total Minutes Spent"),
+  column.labels = c("Treatment Only", "Covariates","All Covariates"),
+  type = 'text', 
+  header=F
+  )
+
+
+
+
+```
+
+# Linear Models with Covariates Included (log of outcome)
+```{r}
+
+# Linear model for duration - without outliers 
+model_dur_min_d2_out_rem_log_treat <- lm(log(dur_min) ~ 
+                                     treat, data = d2_out_rem)
+#summary(model_dur_min_d2_out_rem_log)
+
+
+
+
+model_dur_min_d2_out_rem_log_some_cov <- lm(log(dur_min) ~ 
+                                     treat +
+                                     time_on_survey+
+                                     mturk, data = d2_out_rem)
+
+
+model_dur_min_d2_out_rem_log_all_cov <- lm(log(dur_min) ~ 
+                                     treat + get_survey + 
+                                     past_survey_per + 
+                                     time_on_survey + 
+                                     gender + age + 
+                                     ethnicity + education + 
+                                     mturk, data = d2_out_rem)
+
+
+#print models
+stargazer(
+model_dur_min_d2_out_rem_log_treat, model_dur_min_d2_out_rem_log_some_cov,model_dur_min_d2_out_rem_log_all_cov,
+  dep.var.labels=c("Log Total Time Spent in Minutes"),
+  column.labels = c("Treatment Only", "Covariates", "All Covariates"),
+  type = 'text', 
+  header=F
+  )
+```
+
+
+#running a Poisson Regression on Questions Answered
+```{r}
+
+model_total_ques_d2_out_rem_pois_all_cov <- glm(total_ques ~ 
+                                treat + get_survey + 
+                                past_survey_per + 
+                                time_on_survey + 
+                                gender + age + 
+                                ethnicity + education + 
+                                mturk , family="poisson", data = d2_out_rem)
+
+
+model_total_ques_d2_out_rem_pois_some_cov <- glm(total_ques ~ 
+                                     treat+ 
+                                     time_on_survey + 
+                                     mturk, family= "poisson", data = d2_out_rem)
+
+
+model_total_ques_d2_out_rem_pois_treat_only <- glm(total_ques ~ 
+                                treat, family="poisson", data = d2_out_rem)
+
+
+#print models
+stargazer(model_total_ques_d2_out_rem_pois_treat_only,model_total_ques_d2_out_rem_pois_some_cov,model_total_ques_d2_out_rem_pois_all_cov,
+
+  dep.var.labels=c("Total Questions Answered"),
+  column.labels = c("Treatment Only", "Covariates", "All Covariates"),
+  type = 'text', 
+  header=F
+  )
+
+gf_all <- pchisq(model_total_ques_d2_out_rem_pois_all_cov$deviance, model_total_ques_d2_out_rem_pois_all_cov$df.residual, lower.tail=FALSE)
+gf_all
+gf_some <- pchisq(model_total_ques_d2_out_rem_pois_some_cov$deviance, model_total_ques_d2_out_rem_pois_some_cov$df.residual, lower.tail=FALSE)
+gf_some
+gf_treat <- pchisq(model_total_ques_d2_out_rem_pois_treat_only$deviance, model_total_ques_d2_out_rem_pois_treat_only$df.residual, lower.tail=FALSE)
+gf_treat
+
+```
+```{R}
+model_total_ques_d2_out_rem_nb_all_cov <- glm.nb(total_ques ~ 
+                                treat + get_survey + 
+                                past_survey_per + 
+                                time_on_survey + 
+                                gender + age + 
+                                ethnicity + education + 
+                                mturk , data = d2_out_rem)
+summary(model_total_ques_d2_out_rem_nb_all_cov)
+  
+
+nb_p_all <- pchisq(2 * (logLik(model_total_ques_d2_out_rem_nb_all_cov) - logLik(model_total_ques_d2_out_rem_pois_all_cov)), df = 1, lower.tail = FALSE)
+nb_p_all
+model_total_ques_d2_out_rem_nb_some_cov <- glm(total_ques ~ 
+                                     treat+ 
+                                     time_on_survey + 
+                                     mturk, family= "poisson", data = d2_out_rem)
+
+
+model_total_ques_d2_out_rem_nb_treat_only <- glm(total_ques ~ 
+                                treat, family="poisson", data = d2_out_rem)
+
+```
+
+
+# Heterogeneous Treatment Effects
+```{r}
+
+
+
+# Linear model for duration - without outliers 
+model_dur_min_d2_out_rem_hte <- lm(dur_min ~ 
+                                 treat + 
+                                 get_survey + 
+                                 past_survey_per + 
+                                 time_on_survey + 
+                                 age + 
+                                 ethnicity + 
+                                 education + 
+                                 treat*get_survey + treat*mturk, data = d2_out_rem)
+#summary(model_dur_min_d2_out_rem_hte)
+
+
+
+
+
+# Linear model for total questions - without outliers 
+model_total_ques_d2_out_rem_hte <- lm(total_ques ~ 
+                                    treat + 
+                                    get_survey + 
+                                    past_survey_per + 
+                                    time_on_survey +
+                                    gender + age + 
+                                    ethnicity + education + 
+                                    mturk +  treat*mturk + treat*get_survey, data = d2_out_rem)
+#summary(model_total_ques_d2_out_rem_hte)
+
+#print models
+stargazer(model_total_ques_d2_out_rem_hte ,model_dur_min_d2_out_rem_hte,
+
+  dep.var.labels=c("Total Questions Answered", "Total Time Spent in Minutes"),
+  type = 'text', 
+  header=F
+  )
+
+```
+
+
+# Diagnostics after all modeling 
+## The Requirements for a One-Way ANOVA test: 
+- 1. Independent observations 
+     - As we assumed for spillover above, we don't think that observations should be dependent, since there is only one survey. We think it is unlikely that individuals will discuss the survey, and if they do it will most likely be after they have completed the survey. Therefore, this will not have an impact on the survey results. 
+
+- 2. Equal variances
+     - The scale-location plot in the bottom left shows if residuals are spread equally, allowing us to check the assumption of equal variances, or homoscedasticity. Here we see a line that is close to horizontal for all four models, and therefore it seems this assumption was met. 
+      
+- 3. Normal distributions 
+     - The normal Q-Q plot in the top right shows if residuals are normally distributed. Our data does not seem to be normally distributed for either of our outcome variables, questions answered or duration. Therefore, this assumption is not met. However, when we take the log of our outcome variables, the data becomes much closer to normal.  
+
+```{r}
+par(mfrow=c(2,2))
+plot(model_total_ques_d2_out_rem_treat)
+plot(model_total_ques_d2_out_rem_some_cov)
+plot(model_total_ques_d2_out_rem_all_cov)
+plot(model_dur_min_d2_out_rem_treat)
+plot(model_dur_min_d2_out_rem_all_some_cov)
+plot(model_dur_min_d2_out_rem_all_cov )
+plot(model_dur_min_d2_out_rem_log_treat)
+plot(model_dur_min_d2_out_rem_log_some_cov)
+plot(model_dur_min_d2_out_rem_log_all_cov )
+plot(model_total_ques_d2_out_rem_pois_all_cov)
+plot(model_total_ques_d2_out_rem_pois_some_cov)
+plot(model_total_ques_d2_out_rem_pois_treat_only)
+
+par(mfrow=c(2,2))
+plot(model_total_ques_d2_out_rem_pois_all_cov)
+
+
+plot(density(d2_out_rem$total_ques), main="Density Plot - Total Questions w/o outliers")
+plot(density(d2_out_rem$dur_min), main="Density Plot - Duration w/o outliers")
+plot(density(log(d2_out_rem$dur_min)), main="Density Plot - Log Duration w/o outliers")
+```
+ 
+
+
+
+
+
